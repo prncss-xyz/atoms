@@ -1,5 +1,6 @@
 {
   "name": "@prncss-xyz/atoms",
+  "private": false,
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/prncss-xyz/atoms.git"
@@ -16,6 +17,9 @@
 		"test:types": "tsc --noEmit",
 		"format": "prettier --write ./src"
   },
+	"publishConfig": {
+		"access": "public"
+	},
 	"main": "dist/index.cjs",
 	"module": "dist/index.js",
 	"types": "dist/index.d.ts",
