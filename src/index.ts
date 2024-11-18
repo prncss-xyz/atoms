@@ -70,12 +70,13 @@ class SyncAtom<State>
   extends RAtom<State>
   implements IRWAtom<State, [Updater<State, never>], void>
 {
-  constructor(private res: State) {
+  constructor(state: State) {
     super();
+    this.state = state;
   }
   // REMOVE as state means that the store is not initialized yet
   protected read() {
-    return this.res as State;
+    return this.state;
   }
   protected onMount() {}
   // REMOVE as event means that the store is to be reset
@@ -112,29 +113,43 @@ class AsyncAtom<State>
     super();
   }
   // REMOVE as state means that the store is not initialized yet
-  private res: State | Promise<State> | typeof RESET = RESET;
+  private status:
+    | { type: "init" }
+    | { type: "pending"; promise: Promise<State> }
+    | { type: "resolved" } = { type: "init" };
   protected read() {
-    if (this.res === RESET) {
-      const res = new Promise<State>(
-        (resolve) =>
-          (this.unmount = this.cb(
-            getShifter<State>(resolve, this.send.bind(this)),
-          )),
-      );
-      this.res = res;
-      res.then((res) => this.update(res));
+    switch (this.status.type) {
+      case "init":
+        this.status = {
+          type: "pending",
+          promise: new Promise<State>(
+            (resolve) =>
+              (this.unmount = this.cb(
+                getShifter<State>(resolve, this.send.bind(this)),
+              )),
+          ),
+        };
+        setTimeout(() => {
+          const status = this.status;
+          if (status.type !== "pending") throw new Error("toto");
+          status.promise.then((value) => {
+            this.status = { type: "resolved" };
+            this.update(value);
+          });
+        }, 0);
+        throw this.status.promise;
+      case "pending":
+        throw this.status.promise;
+      case "resolved":
+        return this.state;
     }
-    if (this.res instanceof Promise) {
-      throw this.res;
-    }
-    return this.res;
   }
   protected onMount() {}
   // REMOVE as event means that the store is to be reset
   public send(up: Updater<State, typeof RESET>) {
     const state = this.peek();
     if (up === RESET) {
-      this.res = RESET;
+      this.status = { type: "init" };
       this.invalidate();
       this.unmount?.();
       return;
