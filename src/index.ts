@@ -117,7 +117,9 @@ class AsyncAtom<State>
     if (this.res === RESET) {
       const res = new Promise<State>(
         (resolve) =>
-          (this.unmount = this.cb(getShifter(resolve, this.update.bind(this)))),
+          (this.unmount = this.cb(
+            getShifter<State>(resolve, this.send.bind(this)),
+          )),
       );
       this.res = res;
       res.then((res) => this.update(res));
@@ -228,7 +230,7 @@ export async function peekAtom<Value>(atom: IRAtom<Value>): Promise<Value> {
   }
 }
 
-export async function setAtom<Args extends unknown[], R>(
+export async function sendAtom<Args extends unknown[], R>(
   atom: IWAtom<Args, R>,
   ...args: Args
 ): Promise<R> {
@@ -237,7 +239,7 @@ export async function setAtom<Args extends unknown[], R>(
   } catch (e) {
     if (e instanceof Promise) {
       await e;
-      return setAtom(atom, ...args);
+      return sendAtom(atom, ...args);
     } else throw e;
   }
 }
