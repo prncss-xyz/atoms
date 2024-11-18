@@ -1,5 +1,7 @@
-import { isFunction, shallowEqual, Updater } from "@constellar/core";
+import { isFunction } from "@constellar/core";
 import { useRef, useSyncExternalStore } from "react";
+
+type Updater<Value, Command> = Command | Value | ((value: Value) => Value);
 
 export const RESET = Symbol("RESET");
 
@@ -11,6 +13,10 @@ export interface IRAtom<Value> {
 export interface IWAtom<Args extends unknown[], R> {
   send(...args: Args): R;
 }
+
+export interface IStateAtom<State>
+  extends IRAtom<State>,
+    IWAtom<[Updater<State, never>], void> {}
 
 export interface IRWAtom<Value, Args extends unknown[], R>
   extends IRAtom<Value>,
@@ -24,7 +30,7 @@ export abstract class RAtom<State> implements IRAtom<State> {
   protected state = undefined as State;
   protected abstract read(): State;
   protected abstract onMount(): void | (() => void);
-  subscribe(subscriber: () => void) {
+  public subscribe(subscriber: () => void) {
     if (this.subscribers.size === 0) this.unmount = this.onMount();
     this.subscribers.add(subscriber);
     return () => {
@@ -37,7 +43,7 @@ export abstract class RAtom<State> implements IRAtom<State> {
       }
     };
   }
-  peek() {
+  public peek() {
     if (this.dirty) {
       this.state = this.read();
       this.dirty = false;
@@ -49,11 +55,11 @@ export abstract class RAtom<State> implements IRAtom<State> {
       subscriber();
     }
   }
-  update(next: State) {
+  protected update(next: State) {
     this.state = next;
     this.notify();
   }
-  invalidate() {
+  protected invalidate() {
     this.dirty = true;
     this.notify();
   }
@@ -64,18 +70,16 @@ class SyncAtom<State>
   extends RAtom<State>
   implements IRWAtom<State, [Updater<State, never>], void>
 {
-  constructor(init: State) {
+  constructor(private res: State) {
     super();
-    this.res = init;
   }
   // REMOVE as state means that the store is not initialized yet
-  res: State | typeof RESET = RESET;
-  read() {
+  protected read() {
     return this.res as State;
   }
-  onMount() {}
+  protected onMount() {}
   // REMOVE as event means that the store is to be reset
-  send(up: Updater<State, never>) {
+  public send(up: Updater<State, never>) {
     const state = this.peek();
     const next = isFunction(up) ? up(state) : up;
     if (Object.is(next, state)) return;
@@ -83,25 +87,37 @@ class SyncAtom<State>
   }
 }
 
+function getShifter<State>(
+  once: (value: State) => void,
+  after: (value: State) => void,
+) {
+  let first = true;
+  return function (value: State) {
+    if (first) {
+      first = false;
+      once(value);
+      return;
+    }
+    after(value);
+  };
+}
+
 class AsyncAtom<State>
   extends RAtom<State>
   implements IRWAtom<State, [Updater<State, never>], void>
 {
   constructor(
-    private cb: (
-      resolve: (value: State | PromiseLike<State>) => void,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      reject: (reason?: any) => void,
-    ) => void | (() => void),
+    private cb: (set: (value: State) => void) => void | (() => void),
   ) {
     super();
   }
   // REMOVE as state means that the store is not initialized yet
-  res: State | Promise<State> | typeof RESET = RESET;
-  read() {
+  private res: State | Promise<State> | typeof RESET = RESET;
+  protected read() {
     if (this.res === RESET) {
       const res = new Promise<State>(
-        (resolve, reject) => (this.unmount = this.cb(resolve, reject)),
+        (resolve) =>
+          (this.unmount = this.cb(getShifter(resolve, this.update.bind(this)))),
       );
       this.res = res;
       res.then((res) => this.update(res));
@@ -111,9 +127,9 @@ class AsyncAtom<State>
     }
     return this.res;
   }
-  onMount() {}
+  protected onMount() {}
   // REMOVE as event means that the store is to be reset
-  send(up: Updater<State, typeof RESET>) {
+  public send(up: Updater<State, typeof RESET>) {
     const state = this.peek();
     if (up === RESET) {
       this.res = RESET;
@@ -132,18 +148,14 @@ export function syncAtom<State>(init: State) {
 }
 
 export function asyncAtom<State>(
-  cb: (
-    resolve: (value: State | PromiseLike<State>) => void,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    reject: (reason?: any) => void,
-  ) => void | (() => void),
+  cb: (set: (value: State) => void) => void | (() => void),
 ) {
   return new AsyncAtom(cb);
 }
 
 export function promiseAtom<State>(cb: () => Promise<State>) {
-  return new AsyncAtom((resolve, reject) => {
-    cb().then(resolve, reject);
+  return new AsyncAtom((resolve) => {
+    cb().then(resolve);
   });
 }
 
@@ -171,7 +183,7 @@ class DerivedAtom<Value, Args extends unknown[], R>
       ...args,
     );
   }
-  read() {
+  protected read() {
     const deps = new Set<IRAtom<unknown>>();
     const state = this.get((atom) => {
       deps.add(atom);
@@ -191,7 +203,7 @@ class DerivedAtom<Value, Args extends unknown[], R>
     }
     return state;
   }
-  onMount() {
+  protected onMount() {
     for (const [dep] of this.deps) {
       this.deps.set(
         dep,
@@ -203,6 +215,16 @@ class DerivedAtom<Value, Args extends unknown[], R>
         cb();
       }
     };
+  }
+}
+
+export async function peekAtom<Value>(atom: IRAtom<Value>): Promise<Value> {
+  try {
+    return atom.peek();
+  } catch (e) {
+    if (e instanceof Promise) {
+      return e;
+    } else throw e;
   }
 }
 
@@ -233,7 +255,7 @@ export function useAtom<Value>(atom: IRAtom<Value>) {
     (nofity) =>
       atom.subscribe(() => {
         const next = atom.peek();
-        if (!shallowEqual(acc.current, next)) {
+        if (!Object.is(acc.current, next)) {
           acc.current = next;
           nofity();
         }
