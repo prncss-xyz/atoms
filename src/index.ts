@@ -1,12 +1,7 @@
-import {
-  fromInit,
-  Init,
-  isFunction,
-  REMOVE,
-  shallowEqual,
-  Updater,
-} from "@constellar/core";
+import { isFunction, shallowEqual, Updater } from "@constellar/core";
 import { useRef, useSyncExternalStore } from "react";
+
+export const RESET = Symbol("RESET");
 
 export interface IRAtom<Value> {
   peek(): Value;
@@ -23,7 +18,7 @@ export interface IRWAtom<Value, Args extends unknown[], R>
 
 export abstract class RAtom<State> implements IRAtom<State> {
   private subscribers: Set<() => void> = new Set();
-  private unmount: void | (() => void) = undefined;
+  protected unmount: void | (() => void) = undefined;
   private dirty = true;
   // `dirty = true` ensures initial undefined value is never read
   protected state = undefined as State;
@@ -65,25 +60,51 @@ export abstract class RAtom<State> implements IRAtom<State> {
 }
 
 // TODO: middleware
-export class StoreAtom<State>
+class SyncAtom<State>
   extends RAtom<State>
   implements IRWAtom<State, [Updater<State, never>], void>
 {
-  constructor(private init: Init<State | Promise<State>>) {
+  constructor(init: State) {
+    super();
+    this.res = init;
+  }
+  // REMOVE as state means that the store is not initialized yet
+  res: State | typeof RESET = RESET;
+  read() {
+    return this.res as State;
+  }
+  onMount() {}
+  // REMOVE as event means that the store is to be reset
+  send(up: Updater<State, never>) {
+    const state = this.peek();
+    const next = isFunction(up) ? up(state) : up;
+    if (Object.is(next, state)) return;
+    this.update(next);
+  }
+}
+
+class AsyncAtom<State>
+  extends RAtom<State>
+  implements IRWAtom<State, [Updater<State, never>], void>
+{
+  constructor(
+    private cb: (
+      resolve: (value: State | PromiseLike<State>) => void,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      reject: (reason?: any) => void,
+    ) => void | (() => void),
+  ) {
     super();
   }
   // REMOVE as state means that the store is not initialized yet
-  res: State | Promise<State> | typeof REMOVE = REMOVE;
+  res: State | Promise<State> | typeof RESET = RESET;
   read() {
-    if (this.res === REMOVE) {
-      this.res = fromInit(this.init);
-      if (this.res instanceof Promise) {
-        setTimeout(async () => {
-          const res = (await this.res) as State;
-          this.init = res; // this enables reset
-          this.update(res);
-        }, 0);
-      }
+    if (this.res === RESET) {
+      const res = new Promise<State>(
+        (resolve, reject) => (this.unmount = this.cb(resolve, reject)),
+      );
+      this.res = res;
+      res.then((res) => this.update(res));
     }
     if (this.res instanceof Promise) {
       throw this.res;
@@ -92,16 +113,38 @@ export class StoreAtom<State>
   }
   onMount() {}
   // REMOVE as event means that the store is to be reset
-  send(up: Updater<State, typeof REMOVE>) {
+  send(up: Updater<State, typeof RESET>) {
     const state = this.peek();
-    const next = isFunction(up) ? up(state) : up === REMOVE ? this.init : up;
+    if (up === RESET) {
+      this.res = RESET;
+      this.invalidate();
+      this.unmount?.();
+      return;
+    }
+    const next = isFunction(up) ? up(state) : up;
     if (Object.is(next, state)) return;
     this.update(next);
   }
 }
 
-export function storeAtom<State>(init: Init<State | Promise<State>>) {
-  return new StoreAtom(init);
+export function syncAtom<State>(init: State) {
+  return new SyncAtom(init);
+}
+
+export function asyncAtom<State>(
+  cb: (
+    resolve: (value: State | PromiseLike<State>) => void,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    reject: (reason?: any) => void,
+  ) => void | (() => void),
+) {
+  return new AsyncAtom(cb);
+}
+
+export function promiseAtom<State>(cb: () => Promise<State>) {
+  return new AsyncAtom((resolve, reject) => {
+    cb().then(resolve, reject);
+  });
 }
 
 type Getter = <Value>(atom: IRAtom<Value>) => Value;
