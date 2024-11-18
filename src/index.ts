@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { isFunction } from "@constellar/core";
 import { useRef, useSyncExternalStore } from "react";
 
@@ -266,18 +267,22 @@ export function derivedAtom<Value, Args extends unknown[], R>(
   return new DerivedAtom(get, set);
 }
 
-export function useAtom<Value>(atom: IRAtom<Value>) {
-  const acc = useRef(atom.peek());
-  return useSyncExternalStore(
+export function useAtom<Value, Selected = Value>(
+  atom: IRAtom<Value>,
+  selector?: (value: Value) => Selected,
+) {
+  const acc = useRef(selector ? selector(atom.peek()) : (atom.peek() as any));
+  return useSyncExternalStore<Selected>(
     (nofity) =>
       atom.subscribe(() => {
-        const next = atom.peek();
+        const next = selector ? selector(atom.peek()) : (atom.peek() as any);
         if (!Object.is(acc.current, next)) {
           acc.current = next;
           nofity();
         }
       }),
     () => acc.current,
-    () => atom.peek(), // TODO: manage server-side rendering
+    () => (selector ? selector(atom.peek()) : (atom.peek() as any)),
+    // TODO: manage server-side rendering
   );
 }
